@@ -42,6 +42,7 @@
         .primary-btn {
             background-color: var(--primary);
             color: var(--on-primary);
+            transition: all 0.2s ease;
         }
 
         .primary-btn:active {
@@ -92,6 +93,24 @@
             background-color: var(--primary-container);
             color: var(--on-primary-container);
             border-color: var(--primary);
+        }
+
+        /* Tactile Anti-Spam Friction Animations */
+        @keyframes card-shake {
+            0%, 100% { transform: translateX(0); }
+            20%, 60% { transform: translateX(-8px); }
+            40%, 80% { transform: translateX(8px); }
+        }
+
+        .anti-spam-shake {
+            animation: card-shake 0.3s cubic-bezier(.36, .07, .19, .97) both;
+            border-color: #ef4444 !important;
+            box-shadow: 0 10px 15px -3px rgba(239, 68, 68, 0.2), 0 4px 6px -4px rgba(239, 68, 68, 0.2) !important;
+        }
+
+        .card-cooldown {
+            opacity: 0.85;
+            cursor: not-allowed;
         }
     </style>
 </head>
@@ -178,7 +197,7 @@
             { word: "adequate", partOfSpeech: "adjective", definition: "Satisfactory or acceptable in quality or quantity for a need." },
             { word: "adjust", partOfSpeech: "verb", definition: "To alter slightly to achieve a better match or functional state." },
             { word: "administration", partOfSpeech: "noun", definition: "The systematic organizing of business, operations, or institutions." },
-            { word: "affect", partOfSpeech: "verb", definition: "To influence, modify, or produce a physical or emotional change." },
+            { word: "affect", partOfSpeech: "verb", definition: "To influence, modify, or produce a physical or emotional change.", spokenOverride: "to affect" },
             { word: "alter", partOfSpeech: "verb", definition: "To change or modify characteristically without replacing entirely." },
             { word: "alternative", partOfSpeech: "noun/adj", definition: "One of two or more available possibilities or distinct choices." },
             { word: "analyze", partOfSpeech: "verb", definition: "To examine methodically to explain its nature or structure." },
@@ -191,7 +210,7 @@
             { word: "assist", partOfSpeech: "verb", definition: "To help someone by sharing work, resources, or adding support." },
             { word: "assume", partOfSpeech: "verb", definition: "To suppose that something is true without verified proof or evidence." },
             { word: "attitude", partOfSpeech: "noun", definition: "A settled way of thinking or feeling, reflected in behavior." },
-            { word: "attribute", partOfSpeech: "verb/noun", definition: "To regard as caused by a specific factor; a characteristic quality." },
+            { word: "attribute", partOfSpeech: "verb/noun", definition: "To regard as caused by a specific factor; a characteristic quality.", spokenOverride: "to attribute" },
             { word: "authority", partOfSpeech: "noun", definition: "The legal power or institutional capacity to enforce compliance." },
             { word: "available", partOfSpeech: "adjective", definition: "Able to be used, obtained, or reached easily at this moment." },
             { word: "aware", partOfSpeech: "adjective", definition: "Having knowledge or perception of a situation, fact, or event." },
@@ -291,7 +310,9 @@
             timer: null,
             speechTimeout: null, // Audio delay queue safeguard
             elapsedSeconds: 0,
-            isPlaying: true
+            isPlaying: true,
+            isAudioLocked: false,
+            audioLockDuration: 1200 // Lockout duration in ms to resist impulsive triggers
         };
 
         // DOM elements
@@ -318,15 +339,48 @@
 
         function init() {
             renderWord();
+            
             cardTrigger.addEventListener('click', (e) => {
                 // If they tapped controls, don't trigger replay
                 if (e.target.closest('#controls-panel')) return;
+                
+                if (state.isAudioLocked) {
+                    applyImpulseVisualFriction();
+                    return;
+                }
+                
                 speakCurrentWord();
             });
+            
             nextBtn.addEventListener('click', () => {
+                if (state.isAudioLocked) {
+                    applyImpulseVisualFriction();
+                    return;
+                }
                 advanceWord();
             });
+            
             togglePacerBtn.addEventListener('click', togglePacing);
+        }
+
+        // Apply a high-resistance dynamic shake to visual components to show friction/cooldown
+        function applyImpulseVisualFriction() {
+            // Remove animation if already present to trigger a fresh shake
+            cardTrigger.classList.remove('anti-spam-shake');
+            void cardTrigger.offsetWidth; // Force Reflow
+            cardTrigger.classList.add('anti-spam-shake');
+            
+            const originalText = audioIndicatorText.innerText;
+            audioIndicatorText.innerText = "Resisting Spam...";
+            
+            setTimeout(() => {
+                cardTrigger.classList.remove('anti-spam-shake');
+                if (state.isAudioLocked) {
+                    audioIndicatorText.innerText = "System Locked";
+                } else {
+                    audioIndicatorText.innerText = originalText;
+                }
+            }, 300);
         }
 
         // Dynamic Pace Multiplier Switcher
@@ -392,7 +446,13 @@
 
                 if (state.elapsedSeconds >= totalDuration) {
                     clearInterval(state.timer);
-                    advanceWord();
+                    // Double check if system locked before advancing autonomously
+                    if (state.isAudioLocked) {
+                        // Force a delay wait to keep it synced and robust
+                        setTimeout(advanceWord, 500);
+                    } else {
+                        advanceWord();
+                    }
                 }
             }, 100);
         }
@@ -436,26 +496,32 @@
 
         function speakCurrentWord() {
             if ('speechSynthesis' in window) {
-                // 1. Immediately drop any pending speech timeouts to prevent back-to-back voice stack triggers
-                if (state.speechTimeout) {
-                    clearTimeout(state.speechTimeout);
-                }
-                
-                // 2. Kill current spoken audio strictly
+                // 1. Immediately block incoming triggers to resist impulsive rapid taps
+                state.isAudioLocked = true;
+                cardTrigger.classList.add('card-cooldown');
+                nextBtn.classList.add('opacity-50', 'cursor-not-allowed');
+
+                // 2. Immediately cancel any active speech processes
                 window.speechSynthesis.cancel();
                 updateSpeechUI(false);
 
-                // 3. Spawning the utterance asynchronously with a safety buffer
-                // This gives WebKit / Blink audio cycles time to clean memory buffers and prevents audio overlap.
+                if (state.speechTimeout) {
+                    clearTimeout(state.speechTimeout);
+                }
+
+                // 3. Queue clean sound utterance with safety gap of 150ms to release browser pipeline
                 state.speechTimeout = setTimeout(() => {
-                    const currentWordText = state.words[state.currentIndex].word;
-                    const utterance = new SpeechSynthesisUtterance(currentWordText);
+                    const currentVocab = state.words[state.currentIndex];
+                    // Correct verb stress modeling: use spokenOverride phrase if supplied
+                    const targetSpokenText = currentVocab.spokenOverride || currentVocab.word;
+                    
+                    const utterance = new SpeechSynthesisUtterance(targetSpokenText);
                     
                     utterance.rate = 0.85; 
                     utterance.pitch = 1.0;
                     utterance.lang = 'en-US'; 
 
-                    // 4. Attach state listeners to reflect the active sound waveform in the UI
+                    // 4. Attach clear listeners
                     utterance.onstart = () => {
                         updateSpeechUI(true);
                     };
@@ -469,13 +535,26 @@
                         updateSpeechUI(false);
                     };
 
-                    // 5. Wake up chrome audio engine state in case of silent lockouts
+                    // Wake up engine lockouts if browser gets stuck
                     if (window.speechSynthesis.paused) {
                         window.speechSynthesis.resume();
                     }
                     
                     window.speechSynthesis.speak(utterance);
-                }, 150); // 150ms structural delay fixes the Mobile Safari & Chrome queue overlapping race conditions
+                    
+                    // 5. Establish robust locked duration block to prevent impulsive tap overlaps
+                    setTimeout(() => {
+                        state.isAudioLocked = false;
+                        cardTrigger.classList.remove('card-cooldown');
+                        nextBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                        
+                        // Force clean display string restoration
+                        if (!window.speechSynthesis.speaking) {
+                            audioIndicatorText.innerText = "Tap to Replay";
+                        }
+                    }, state.audioLockDuration);
+
+                }, 150); 
             }
         }
 
@@ -490,7 +569,11 @@
                 audioIndicator.classList.remove('speaking-active');
                 audioIndicator.classList.add('text-zinc-400', 'dark:text-zinc-500');
                 audioIndicator.classList.remove('text-indigo-600', 'dark:text-indigo-400');
-                audioIndicatorText.innerText = "Tap to Replay";
+                if (!state.isAudioLocked) {
+                    audioIndicatorText.innerText = "Tap to Replay";
+                } else {
+                    audioIndicatorText.innerText = "Processing...";
+                }
             }
         }
 
