@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Vocab Echo - 15s Paced Audio</title>
+    <title>Vocab Echo - Paced Audio Engine</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Material+Icons" rel="stylesheet">
     
@@ -58,6 +58,41 @@
             transform: rotate(-90deg);
             transform-origin: 50% 50%;
         }
+
+        /* Waveform Animation when Audio is Active */
+        .wave-bar {
+            width: 3px;
+            height: 10px;
+            background-color: var(--primary);
+            border-radius: 99px;
+            animation: bounce 0.8s ease-in-out infinite alternate;
+            animation-play-state: paused;
+            transition: all 0.3s ease;
+        }
+
+        .wave-bar:nth-child(2) { animation-delay: 0.15s; }
+        .wave-bar:nth-child(3) { animation-delay: 0.3s; }
+        .wave-bar:nth-child(4) { animation-delay: 0.45s; }
+
+        @keyframes bounce {
+            0% { height: 6px; }
+            100% { height: 22px; }
+        }
+
+        .speaking-active .wave-bar {
+            animation-play-state: running;
+        }
+        
+        /* Chip Styling */
+        .chip {
+            transition: all 0.2s ease;
+            border-color: var(--stroke-default);
+        }
+        .chip.active {
+            background-color: var(--primary-container);
+            color: var(--on-primary-container);
+            border-color: var(--primary);
+        }
     </style>
 </head>
 <body class="flex flex-col justify-between min-h-screen p-4 select-none">
@@ -68,19 +103,37 @@
             <span class="text-xs font-semibold opacity-75" id="pacing-status">15s / word</span>
         </div>
         
-        <!-- Pacing bar -->
+        <!-- Pacing selectors -->
+        <div class="flex justify-between gap-1.5 mt-2 mb-3 px-1">
+            <span class="text-[10px] uppercase tracking-wider font-bold opacity-60 self-center">Interval:</span>
+            <div class="flex gap-1" id="pacing-chips">
+                <button onclick="setDuration(5)" class="chip text-xs px-2.5 py-1 rounded-full border bg-white dark:bg-zinc-900 font-semibold">5s</button>
+                <button onclick="setDuration(10)" class="chip text-xs px-2.5 py-1 rounded-full border bg-white dark:bg-zinc-900 font-semibold">10s</button>
+                <button onclick="setDuration(15)" class="chip active text-xs px-2.5 py-1 rounded-full border bg-white dark:bg-zinc-900 font-semibold">15s</button>
+                <button onclick="setDuration(30)" class="chip text-xs px-2.5 py-1 rounded-full border bg-white dark:bg-zinc-900 font-semibold">30s</button>
+            </div>
+        </div>
+        
+        <!-- Pacing progress bar -->
         <div class="w-full h-2 rounded-full mt-2 overflow-hidden border" style="background-color: var(--stroke-default); border-color: var(--stroke-default);">
             <div id="progress-bar" class="progress-bar-fill h-full w-0 transition-all duration-300"></div>
         </div>
         
-        <div class="text-xs mt-1 font-semibold" style="color: var(--on-surface-de-emphasis);" id="counter">Word 1 of 111</div>
+        <div class="text-xs mt-1.5 font-semibold" style="color: var(--on-surface-de-emphasis);" id="counter">Word 1 of 111</div>
     </header>
 
     <main class="flex-1 flex flex-col justify-center items-center max-w-md mx-auto w-full my-4">
         <div id="card-trigger" class="w-full aspect-[4/3] flex flex-col justify-between items-center bg-white dark:bg-zinc-900 rounded-2xl p-6 border shadow-lg transition-all cursor-pointer relative" style="border-color: var(--stroke-default);">
             
-            <div class="flex items-center gap-1 opacity-60 text-[10px] font-bold uppercase tracking-widest">
-                <span class="material-icons text-xs">volume_up</span> Tap to Replay
+            <!-- Real-time speaking visual feedback -->
+            <div class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500" id="audio-indicator">
+                <div class="flex items-center gap-[3px] h-6 w-8 justify-center" id="wave-container">
+                    <span class="wave-bar"></span>
+                    <span class="wave-bar"></span>
+                    <span class="wave-bar"></span>
+                    <span class="wave-bar"></span>
+                </div>
+                <span id="audio-indicator-text">Tap to Replay</span>
             </div>
 
             <!-- Focus Term Presentation -->
@@ -231,11 +284,12 @@
             { word: "issue", partOfSpeech: "noun/verb", definition: "An important topic for debate; to distribute officially." }
         ];
 
-        const totalDuration = 15; // Set precisely to 15s pacing
+        let totalDuration = 15; // Set precisely to 15s pacing default
         let state = {
             currentIndex: 0,
             words: [...vocabData],
             timer: null,
+            speechTimeout: null, // Audio delay queue safeguard
             elapsedSeconds: 0,
             isPlaying: true
         };
@@ -252,6 +306,9 @@
         const countdownText = document.getElementById('countdown-text');
         const togglePacerBtn = document.getElementById('toggle-pacer-btn');
         const playPauseIcon = document.getElementById('play-pause-icon');
+        const pacingStatusEl = document.getElementById('pacing-status');
+        const audioIndicator = document.getElementById('audio-indicator');
+        const audioIndicatorText = document.getElementById('audio-indicator-text');
 
         // Circular ring measurements
         const radius = 20;
@@ -272,6 +329,24 @@
             togglePacerBtn.addEventListener('click', togglePacing);
         }
 
+        // Dynamic Pace Multiplier Switcher
+        function setDuration(seconds) {
+            totalDuration = seconds;
+            
+            // Highlight the active chip element
+            const chips = document.querySelectorAll('#pacing-chips button');
+            chips.forEach(chip => {
+                if (chip.textContent === `${seconds}s`) {
+                    chip.classList.add('active');
+                } else {
+                    chip.classList.remove('active');
+                }
+            });
+
+            pacingStatusEl.innerText = `${totalDuration}s / word`;
+            resetClock();
+        }
+
         function renderWord() {
             const current = state.words[state.currentIndex];
             wordEl.innerText = current.word;
@@ -283,13 +358,15 @@
             progressEl.style.width = `${progressPercent}%`;
             counterEl.innerText = `Word ${state.currentIndex + 1} of ${state.words.length}`;
             
-            // Reset clock
+            // Reset clock & invoke strict speaking queue
             resetClock();
             speakCurrentWord();
         }
 
         function resetClock() {
-            clearInterval(state.timer);
+            if (state.timer) {
+                clearInterval(state.timer);
+            }
             state.elapsedSeconds = 0;
             updateRing(0);
             countdownText.innerText = totalDuration;
@@ -300,6 +377,11 @@
         }
 
         function startClock() {
+            // Safety sanitization: guarantee no lingering pacing processes can compile twice
+            if (state.timer) {
+                clearInterval(state.timer);
+            }
+            
             state.timer = setInterval(() => {
                 state.elapsedSeconds += 0.1;
                 const roundedLeft = Math.ceil(totalDuration - state.elapsedSeconds);
@@ -323,7 +405,9 @@
         function togglePacing() {
             if (state.isPlaying) {
                 state.isPlaying = false;
-                clearInterval(state.timer);
+                if (state.timer) {
+                    clearInterval(state.timer);
+                }
                 playPauseIcon.innerText = 'play_arrow';
             } else {
                 state.isPlaying = true;
@@ -337,34 +421,87 @@
                 state.currentIndex++;
                 renderWord();
             } else {
-                clearInterval(state.timer);
+                if (state.timer) {
+                    clearInterval(state.timer);
+                }
+                if (state.speechTimeout) {
+                    clearTimeout(state.speechTimeout);
+                }
+                if ('speechSynthesis' in window) {
+                    window.speechSynthesis.cancel();
+                }
                 showEndScreen();
             }
         }
 
         function speakCurrentWord() {
             if ('speechSynthesis' in window) {
-                window.speechSynthesis.cancel(); 
-                const currentWordText = state.words[state.currentIndex].word;
-                const utterance = new SpeechSynthesisUtterance(currentWordText);
+                // 1. Immediately drop any pending speech timeouts to prevent back-to-back voice stack triggers
+                if (state.speechTimeout) {
+                    clearTimeout(state.speechTimeout);
+                }
                 
-                utterance.rate = 0.85; 
-                utterance.pitch = 1.0;
-                utterance.lang = 'en-US'; 
-                
-                window.speechSynthesis.speak(utterance);
+                // 2. Kill current spoken audio strictly
+                window.speechSynthesis.cancel();
+                updateSpeechUI(false);
+
+                // 3. Spawning the utterance asynchronously with a safety buffer
+                // This gives WebKit / Blink audio cycles time to clean memory buffers and prevents audio overlap.
+                state.speechTimeout = setTimeout(() => {
+                    const currentWordText = state.words[state.currentIndex].word;
+                    const utterance = new SpeechSynthesisUtterance(currentWordText);
+                    
+                    utterance.rate = 0.85; 
+                    utterance.pitch = 1.0;
+                    utterance.lang = 'en-US'; 
+
+                    // 4. Attach state listeners to reflect the active sound waveform in the UI
+                    utterance.onstart = () => {
+                        updateSpeechUI(true);
+                    };
+
+                    utterance.onend = () => {
+                        updateSpeechUI(false);
+                    };
+
+                    utterance.onerror = (event) => {
+                        console.warn("Speech Synthesis reported error:", event);
+                        updateSpeechUI(false);
+                    };
+
+                    // 5. Wake up chrome audio engine state in case of silent lockouts
+                    if (window.speechSynthesis.paused) {
+                        window.speechSynthesis.resume();
+                    }
+                    
+                    window.speechSynthesis.speak(utterance);
+                }, 150); // 150ms structural delay fixes the Mobile Safari & Chrome queue overlapping race conditions
+            }
+        }
+
+        // UI Waveform dynamic activator
+        function updateSpeechUI(isSpeaking) {
+            if (isSpeaking) {
+                audioIndicator.classList.add('speaking-active');
+                audioIndicator.classList.remove('text-zinc-400', 'dark:text-zinc-500');
+                audioIndicator.classList.add('text-indigo-600', 'dark:text-indigo-400');
+                audioIndicatorText.innerText = "Speaking...";
+            } else {
+                audioIndicator.classList.remove('speaking-active');
+                audioIndicator.classList.add('text-zinc-400', 'dark:text-zinc-500');
+                audioIndicator.classList.remove('text-indigo-600', 'dark:text-indigo-400');
+                audioIndicatorText.innerText = "Tap to Replay";
             }
         }
 
         function showEndScreen() {
-            // Clean up elements to perfectly match companion style
             cardTrigger.classList.add('justify-center');
             cardTrigger.innerHTML = `
                 <div class="text-center py-4 flex flex-col items-center justify-center gap-4">
-                    <h2 class="text-3xl font-extrabold tracking-tight" style="color: var(--on-surface-default);">Module 1 Complete!</h2>
-                    <p class="text-sm opacity-80" style="color: var(--on-surface-de-emphasis);">Nice work. Ready for the next module?</p>
+                    <h2 class="text-3xl font-extrabold tracking-tight" style="color: var(--on-surface-default);">Listening Complete!</h2>
+                    <p class="text-sm opacity-80" style="color: var(--on-surface-de-emphasis);">Great listening practice. Ready to restart?</p>
                     <button onclick="window.location.reload();" class="primary-btn px-6 py-3 font-semibold rounded-lg shadow-md transition-all active:scale-[0.98]">
-                        Continue
+                        Restart Sprint
                     </button>
                 </div>
             `;
